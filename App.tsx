@@ -28,6 +28,11 @@ export default function App() {
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [currentImportSessionId, setCurrentImportSessionId] = useState<number | null>(null);
 
+  // Progression de l'analyse Claude
+  const [progressCurrent, setProgressCurrent] = useState(0);
+  const [progressTotal, setProgressTotal] = useState(0);
+  const [abortControllerRef, setAbortControllerRef] = useState<AbortController | null>(null);
+
   const handleFileSelect = useCallback(async (file: File) => {
     setError(null);
     setSelectedFile(file);
@@ -46,6 +51,10 @@ export default function App() {
     setError(null);
     setAppState(AppState.PARSING);
 
+    // Créer un AbortController pour pouvoir annuler
+    const abortController = new AbortController();
+    setAbortControllerRef(abortController);
+
     try {
       // ÉTAPE 1: Parser le fichier Excel (côté client)
       const requirements = await parseExcelFile(selectedFile, mapping);
@@ -54,6 +63,11 @@ export default function App() {
       }
 
       console.log(`📊 ${requirements.length} exigences extraites du fichier`);
+
+      // Vérifier si annulé
+      if (abortController.signal.aborted) {
+        throw new Error('Traitement annulé par l\'utilisateur');
+      }
 
       // ÉTAPE 2: Uploader vers le backend ML (PostgreSQL)
       console.log('💾 Sauvegarde dans PostgreSQL...');
@@ -68,12 +82,30 @@ export default function App() {
         // Continuer quand même avec Claude
       }
 
+      // Vérifier si annulé
+      if (abortController.signal.aborted) {
+        throw new Error('Traitement annulé par l\'utilisateur');
+      }
+
       // ÉTAPE 3: Analyser avec Claude (comme avant)
       setAppState(AppState.ANALYZING);
+      setProgressTotal(requirements.length);
+      setProgressCurrent(0);
       console.log('🤖 Analyse avec Claude en cours...');
-      const claudeResults = await analyzeComplianceData(requirements);
+
+      const claudeResults = await analyzeComplianceData(
+        requirements,
+        (current: number) => {
+          // Callback de progression
+          setProgressCurrent(current);
+        },
+        abortController.signal
+      );
+
       setAnalysisResults(claudeResults);
       setAppState(AppState.SUCCESS);
+      setProgressCurrent(0);
+      setProgressTotal(0);
       console.log(`✅ Analyse Claude terminée: ${claudeResults.length} résultats`);
 
       // ÉTAPE 3.5: Sauvegarder les résultats Claude dans PostgreSQL
@@ -126,10 +158,29 @@ export default function App() {
     } catch (err: any) {
       setError(err.message || 'Une erreur est survenue.');
       setAppState(AppState.ERROR);
+      setProgressCurrent(0);
+      setProgressTotal(0);
+      setAbortControllerRef(null);
     }
   }, [selectedFile]);
 
+  const handleAbort = useCallback(() => {
+    if (abortControllerRef) {
+      abortControllerRef.abort();
+      setError('Traitement annulé par l\'utilisateur');
+      setAppState(AppState.ERROR);
+      setProgressCurrent(0);
+      setProgressTotal(0);
+      setAbortControllerRef(null);
+    }
+  }, [abortControllerRef]);
+
   const handleReset = () => {
+    // Annuler tout traitement en cours
+    if (abortControllerRef) {
+      abortControllerRef.abort();
+    }
+
     setAnalysisResults([]);
     setMlResults([]);
     setError(null);
@@ -138,6 +189,9 @@ export default function App() {
     setDetectedHeaders([]);
     setMlAnalysisRunning(false);
     setCurrentImportSessionId(null);
+    setProgressCurrent(0);
+    setProgressTotal(0);
+    setAbortControllerRef(null);
     setAppState(AppState.IDLE);
   };
 
@@ -172,6 +226,9 @@ export default function App() {
           appState={appState}
           error={error}
           onOpenHistory={() => setHistoryModalOpen(true)}
+          progressCurrent={progressCurrent}
+          progressTotal={progressTotal}
+          onAbort={handleAbort}
         />
         <ColumnMappingModal
           isOpen={appState === AppState.MAPPING}

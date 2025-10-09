@@ -8,11 +8,24 @@ interface FileUploadScreenProps {
   appState: AppState;
   error: string | null;
   onOpenHistory?: () => void;
+  progressCurrent?: number;
+  progressTotal?: number;
+  onAbort?: () => void;
 }
 
-export const FileUploadScreen: React.FC<FileUploadScreenProps> = ({ onFileSelect, appState, error, onOpenHistory }) => {
+export const FileUploadScreen: React.FC<FileUploadScreenProps> = ({
+  onFileSelect,
+  appState,
+  error,
+  onOpenHistory,
+  progressCurrent = 0,
+  progressTotal = 0,
+  onAbort
+}) => {
   const isLoading = appState === AppState.PARSING || appState === AppState.ANALYZING;
   const loadingText = appState === AppState.PARSING ? "Analyse du fichier Excel..." : "L'IA analyse les données...";
+  const showProgress = appState === AppState.ANALYZING && progressTotal > 0;
+  const progressPercent = progressTotal > 0 ? Math.round((progressCurrent / progressTotal) * 100) : 0;
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -33,7 +46,31 @@ export const FileUploadScreen: React.FC<FileUploadScreenProps> = ({ onFileSelect
         </div>
 
         {isLoading ? (
-          <div className="my-8"><Loader text={loadingText} /></div>
+          <div className="my-8">
+            <Loader text={loadingText} />
+            {showProgress && (
+              <div className="mt-6 space-y-3">
+                <div className="flex justify-between text-sm text-gray-600 mb-2">
+                  <span>Analyse en cours...</span>
+                  <span>{progressCurrent} / {progressTotal} exigences ({progressPercent}%)</span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-300 ease-out"
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
+                {onAbort && (
+                  <button
+                    onClick={onAbort}
+                    className="w-full px-4 py-2 mt-4 bg-red-100 text-red-700 border border-red-300 rounded-lg hover:bg-red-200 transition-colors font-medium"
+                  >
+                    ⏹ Arrêter le traitement
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         ) : (
           <div className="bg-blue-50 border-2 border-dashed border-blue-200 rounded-lg p-6 text-center">
             <IconUpload className="w-12 h-12 text-blue-600 mx-auto mb-4" />

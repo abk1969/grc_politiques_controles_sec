@@ -104,7 +104,11 @@ const retryWithBackoff = async <T>(
   throw new Error('Toutes les tentatives ont échoué');
 };
 
-export const analyzeComplianceData = async (requirements: Requirement[]): Promise<AnalysisResult[]> => {
+export const analyzeComplianceData = async (
+  requirements: Requirement[],
+  onProgress?: (current: number) => void,
+  abortSignal?: AbortSignal
+): Promise<AnalysisResult[]> => {
   // Process in batches if dataset is large to avoid token limits
   const BATCH_SIZE = 10; // Process 10 requirements at a time
 
@@ -113,23 +117,47 @@ export const analyzeComplianceData = async (requirements: Requirement[]): Promis
     const results: AnalysisResult[] = [];
 
     for (let i = 0; i < requirements.length; i += BATCH_SIZE) {
+      // Vérifier si annulé
+      if (abortSignal?.aborted) {
+        throw new ClaudeAPIError('Traitement annulé par l\'utilisateur');
+      }
+
       const batch = requirements.slice(i, i + BATCH_SIZE);
       console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(requirements.length / BATCH_SIZE)}...`);
-      const batchResults = await analyzeComplianceBatch(batch);
+      const batchResults = await analyzeComplianceBatch(batch, abortSignal);
       results.push(...batchResults);
+
+      // Mettre à jour la progression
+      if (onProgress) {
+        onProgress(Math.min(i + BATCH_SIZE, requirements.length));
+      }
     }
 
     return results;
   }
 
-  return analyzeComplianceBatch(requirements);
+  const result = await analyzeComplianceBatch(requirements, abortSignal);
+  if (onProgress) {
+    onProgress(requirements.length);
+  }
+  return result;
 };
 
-const analyzeComplianceBatch = async (requirements: Requirement[]): Promise<AnalysisResult[]> => {
+const analyzeComplianceBatch = async (requirements: Requirement[], abortSignal?: AbortSignal): Promise<AnalysisResult[]> => {
   const prompt = buildPrompt(requirements);
 
   try {
+    // Vérifier si annulé avant de commencer
+    if (abortSignal?.aborted) {
+      throw new ClaudeAPIError('Traitement annulé par l\'utilisateur');
+    }
+
     const response = await retryWithBackoff(async () => {
+      // Vérifier si annulé pendant les tentatives
+      if (abortSignal?.aborted) {
+        throw new ClaudeAPIError('Traitement annulé par l\'utilisateur');
+      }
+
       return await anthropic.messages.create({
         model: "claude-sonnet-4-20250514",
         max_tokens: 16000, // Increased from 8000 to handle larger responses
