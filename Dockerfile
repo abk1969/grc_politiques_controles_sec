@@ -6,14 +6,26 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# Build arguments for API keys (optional)
+ARG ANTHROPIC_API_KEY=""
+ARG CLAUDE_API_KEY=""
+ARG GEMINI_API_KEY=""
+ARG VITE_API_URL="http://localhost:8001"
+
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Install ALL dependencies (including devDependencies for build)
+RUN npm ci
 
 # Copy source code
 COPY . .
+
+# Set environment variables for Vite build
+ENV ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+ENV CLAUDE_API_KEY=$CLAUDE_API_KEY
+ENV GEMINI_API_KEY=$GEMINI_API_KEY
+ENV VITE_API_URL=$VITE_API_URL
 
 # Build the application
 RUN npm run build
