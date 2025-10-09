@@ -37,6 +37,20 @@ export const FileUploadScreen: React.FC<FileUploadScreenProps> = ({
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-100 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-2xl w-full transform transition-all hover:scale-[1.01]">
+        {/* Bouton Historique toujours visible en haut à droite */}
+        {onOpenHistory && (
+          <div className="flex justify-end mb-4">
+            <button
+              onClick={onOpenHistory}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-blue-50 text-blue-700 border border-blue-300 rounded-lg hover:bg-blue-100 transition-colors"
+              title="Voir l'historique des imports précédents"
+            >
+              <ClockIcon className="w-4 h-4" />
+              Historique
+            </button>
+          </div>
+        )}
+
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-20 h-20 bg-blue-100 rounded-full mb-4">
             <IconShield className="w-10 h-10 text-blue-600" />
