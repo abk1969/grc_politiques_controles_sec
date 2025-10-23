@@ -1,46 +1,23 @@
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
+*.so
+*.egg
 *.egg-info/
 dist/
 build/
-
-# Virtual environment
 .venv/
 venv/
 env/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
+.env
+.env.*
 *.log
-backend.log
-backend_fresh.log
-
-# Cache
-cache/
-.cache/
-
-# Environment
-.env.local
-.env.development
-
-# Test
+cache/*.pkl
 .pytest_cache/
 .coverage
 htmlcov/
-
-# Git
-.git/
-.gitignore
+*.db
+*.sqlite
+*.sqlite3
