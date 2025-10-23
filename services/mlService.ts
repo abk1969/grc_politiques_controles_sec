@@ -6,7 +6,7 @@
 import type { Requirement, AnalysisResult } from '../types';
 
 // Configuration de l'API Backend
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001';
 
 // Custom error classes
 export class MLAPIError extends Error {
@@ -364,7 +364,15 @@ export const getImportSessions = async (params?: {
     if (params?.status) queryParams.append('status', params.status);
     if (params?.analysis_source) queryParams.append('analysis_source', params.analysis_source);
 
-    const response = await fetch(`${API_BASE_URL}/api/import-sessions?${queryParams}`);
+    // Créer un AbortController avec timeout de 10 secondes
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch(`${API_BASE_URL}/api/import-sessions?${queryParams}`, {
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       throw new MLAPIError(`Erreur HTTP ${response.status}`, response.status);
@@ -375,7 +383,21 @@ export const getImportSessions = async (params?: {
     if (error instanceof MLAPIError) {
       throw error;
     }
-    throw new MLAPIError('Erreur lors de la récupération de l\'historique', undefined, error);
+
+    // Gestion spécifique du timeout
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new MLAPIError(
+        'Le backend ne répond pas (timeout 10s). Vérifiez que le serveur Python est démarré sur le port 8001.',
+        undefined,
+        error
+      );
+    }
+
+    throw new MLAPIError(
+      'Backend non disponible. Assurez-vous que le serveur Python est démarré (port 8001).',
+      undefined,
+      error
+    );
   }
 };
 
@@ -388,7 +410,15 @@ export const loadImportSession = async (sessionId: number): Promise<{
   results: AnalysisResult[];
 }> => {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/import-sessions/${sessionId}/results`);
+    // Créer un AbortController avec timeout de 15 secondes
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    const response = await fetch(`${API_BASE_URL}/api/import-sessions/${sessionId}/results`, {
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ detail: 'Erreur inconnue' }));
@@ -403,7 +433,21 @@ export const loadImportSession = async (sessionId: number): Promise<{
     if (error instanceof MLAPIError) {
       throw error;
     }
-    throw new MLAPIError('Erreur lors du chargement de la session', undefined, error);
+
+    // Gestion spécifique du timeout
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new MLAPIError(
+        'Le backend ne répond pas (timeout 15s). Vérifiez que le serveur Python est démarré sur le port 8001.',
+        undefined,
+        error
+      );
+    }
+
+    throw new MLAPIError(
+      'Backend non disponible. Assurez-vous que le serveur Python est démarré (port 8001).',
+      undefined,
+      error
+    );
   }
 };
 

@@ -23,25 +23,6 @@ export function ImportHistoryModal({ isOpen, onClose, onLoadSession }: ImportHis
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterSource, setFilterSource] = useState<string>('all');
 
-  // Charger les sessions au montage
-  useEffect(() => {
-    if (isOpen) {
-      loadSessions();
-    }
-  }, [isOpen]);
-
-  // Fermer avec Escape
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
-        onClose();
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
-  }, [isOpen, onClose]);
-
   const loadSessions = async () => {
     setLoading(true);
     setError(null);
@@ -87,10 +68,24 @@ export function ImportHistoryModal({ isOpen, onClose, onLoadSession }: ImportHis
     }
   };
 
-  // Filtrer les sessions
+  // Charger les sessions quand le modal s'ouvre ou quand les filtres changent
   useEffect(() => {
-    loadSessions();
-  }, [filterStatus, filterSource]);
+    if (isOpen) {
+      loadSessions();
+    }
+  }, [isOpen, filterStatus, filterSource]);
+
+  // Fermer avec Escape
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [isOpen, onClose]);
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);

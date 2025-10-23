@@ -42,6 +42,7 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:3001",  # Frontend Docker
         "http://localhost:3002",
+        "http://localhost:3003",  # Frontend Dev (alternate port)
         "http://localhost:5173"
     ],
     allow_credentials=True,
@@ -51,6 +52,37 @@ app.add_middleware(
 
 # Initialiser le service ML
 ml_service = MLMappingService()
+
+# Imports pour SCF (ne pas charger tout de suite)
+from scf_knowledge_service import get_scf_knowledge_base
+from scf_api_routes import router as scf_router
+
+# Variable globale pour la base SCF (chargement lazy)
+scf_kb = None
+scf_kb_initialized = False
+
+def get_or_init_scf_kb():
+    """Récupère la base SCF en la chargeant si nécessaire (lazy loading)"""
+    global scf_kb, scf_kb_initialized
+
+    if scf_kb_initialized:
+        return scf_kb
+
+    try:
+        logger.info("📚 Initialisation de la base de connaissances SCF (lazy loading)...")
+        scf_kb = get_scf_knowledge_base()
+        # Initialiser les embeddings avec le modèle ML
+        scf_kb.init_semantic_model(ml_service.model)
+        scf_kb_initialized = True
+        logger.info("✅ Base SCF prête et indexée")
+        return scf_kb
+    except Exception as e:
+        logger.error(f"❌ Erreur initialisation SCF: {e}")
+        scf_kb_initialized = True  # Marquer comme tenté pour éviter les retry
+        return None
+
+# Inclure les routes SCF
+app.include_router(scf_router)
 
 # ============================================
 # Health Check
@@ -136,8 +168,21 @@ async def import_excel(
             # Insérer les données
             for idx, row in df.iterrows():
                 try:
+                    original_id_val = str(row[id_col]) if id_col and pd.notna(row[id_col]) else f"{sheet_name}_{idx}"
+
+                    # Vérifier si l'exigence existe déjà (duplicate key)
+                    existing = db.query(Requirement).filter(
+                        Requirement.original_id == original_id_val,
+                        Requirement.source_file == file.filename
+                    ).first()
+
+                    if existing:
+                        # Skip silencieusement les doublons
+                        logger.debug(f"Skip duplicate: {original_id_val} from {file.filename}")
+                        continue
+
                     requirement = Requirement(
-                        original_id=str(row[id_col]) if id_col and pd.notna(row[id_col]) else f"{sheet_name}_{idx}",
+                        original_id=original_id_val,
                         requirement=str(row[req_col]) if pd.notna(row[req_col]) else "",
                         verification_point=str(row[verif_col]) if verif_col and pd.notna(row[verif_col]) else None,
                         source_file=file.filename,
@@ -148,7 +193,7 @@ async def import_excel(
 
                     db.add(requirement)
                     total_imported += 1
-                    
+
                 except Exception as e:
                     logger.error(f"Erreur ligne {idx}: {e}")
                     continue
@@ -379,50 +424,75 @@ async def save_claude_results(
             db.flush()
 
         saved_count = 0
+        skipped_count = 0
 
         for result in results:
-            # Créer l'exigence
-            requirement = Requirement(
-                original_id=result.get('id', ''),
-                requirement=result.get('requirement', ''),
-                verification_point=result.get('verificationPoint'),
-                source_file=filename,
-                source_sheet='Claude Results',
-                analysis_status='analyzed',
-                import_session_id=import_session.id
-            )
+            try:
+                original_id_val = result.get('id', '')
 
-            db.add(requirement)
-            db.flush()  # Pour obtenir l'ID
+                # Vérifier si l'exigence existe déjà
+                existing = db.query(Requirement).filter(
+                    Requirement.original_id == original_id_val,
+                    Requirement.source_file == filename
+                ).first()
 
-            # Créer le mapping
-            mapping = ComplianceMapping(
-                requirement_id=requirement.id,
-                scf_mapping=result.get('scfMapping'),
-                iso27001_mapping=result.get('iso27001Mapping'),
-                iso27002_mapping=result.get('iso27002Mapping'),
-                cobit5_mapping=result.get('cobit5Mapping'),
-                confidence_score=0.95,  # Claude = haute confiance
-                mapping_source='claude',
-                analysis=result.get('analysis', ''),
-                import_session_id=import_session.id
-            )
+                if existing:
+                    # Skip silencieusement les doublons
+                    logger.debug(f"Skip duplicate requirement: {original_id_val} from {filename}")
+                    skipped_count += 1
+                    continue
 
-            db.add(mapping)
-            saved_count += 1
+                # Créer l'exigence
+                requirement = Requirement(
+                    original_id=original_id_val,
+                    requirement=result.get('requirement', ''),
+                    verification_point=result.get('verificationPoint'),
+                    source_file=filename,
+                    source_sheet='Claude Results',
+                    analysis_status='analyzed',
+                    import_session_id=import_session.id
+                )
+
+                db.add(requirement)
+                db.flush()  # Pour obtenir l'ID
+
+                # Créer le mapping
+                mapping = ComplianceMapping(
+                    requirement_id=requirement.id,
+                    scf_mapping=result.get('scfMapping'),
+                    iso27001_mapping=result.get('iso27001Mapping'),
+                    iso27002_mapping=result.get('iso27002Mapping'),
+                    cobit5_mapping=result.get('cobit5Mapping'),
+                    confidence_score=0.95,  # Claude = haute confiance
+                    mapping_source='claude',
+                    analysis=result.get('analysis', ''),
+                    import_session_id=import_session.id
+                )
+
+                db.add(mapping)
+                saved_count += 1
+
+            except Exception as e:
+                logger.error(f"Erreur lors de la sauvegarde de l'exigence {result.get('id')}: {e}")
+                continue
 
         # Mettre à jour la session
         import_session.status = 'completed'
         import_session.total_requirements = saved_count
         db.commit()
 
-        logger.info(f"OK - {saved_count} resultats Claude sauvegardes (Session ID: {import_session.id})")
+        logger.info(f"OK - {saved_count} resultats Claude sauvegardes, {skipped_count} doublons skippés (Session ID: {import_session.id})")
+
+        message = f"{saved_count} résultats sauvegardés dans PostgreSQL"
+        if skipped_count > 0:
+            message += f" ({skipped_count} doublons ignorés)"
 
         return {
             "success": True,
             "saved_count": saved_count,
+            "skipped_count": skipped_count,
             "import_session_id": import_session.id,
-            "message": f"{saved_count} résultats sauvegardés dans PostgreSQL"
+            "message": message
         }
 
     except Exception as e:

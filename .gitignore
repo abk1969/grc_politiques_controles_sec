@@ -105,3 +105,7 @@ temp/
 *.bak
 *.swp
 *~.nib
+
+# Script PID files
+.frontend.pid
+*.pid

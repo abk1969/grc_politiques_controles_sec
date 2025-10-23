@@ -10,6 +10,7 @@ import { ColumnMappingModal } from './components/ColumnMappingModal';
 import { DashboardScreen } from './components/DashboardScreen';
 import { ChatModalClaude } from './components/ChatModalClaude';
 import { ImportHistoryModal } from './components/ImportHistoryModal';
+import { ManualRequirementModal } from './components/ManualRequirementModal';
 
 // Main App Component - VERSION HYBRIDE (Claude + ML)
 export default function App() {
@@ -32,6 +33,9 @@ export default function App() {
   const [progressCurrent, setProgressCurrent] = useState(0);
   const [progressTotal, setProgressTotal] = useState(0);
   const [abortControllerRef, setAbortControllerRef] = useState<AbortController | null>(null);
+
+  // Modal de saisie manuelle d'exigences
+  const [manualEntryModalOpen, setManualEntryModalOpen] = useState(false);
 
   const handleFileSelect = useCallback(async (file: File) => {
     setError(null);
@@ -204,6 +208,25 @@ export default function App() {
     setMlAnalysisRunning(false);
   }, []);
 
+  const handleAddManualRequirement = useCallback((newRequirement: AnalysisResult) => {
+    console.log('✅ Ajout d\'une nouvelle exigence analysée par orchestration multi-agents');
+
+    // Ajuster l'ID pour éviter les conflits
+    const maxId = analysisResults.length > 0
+      ? Math.max(...analysisResults.map(r => r.id))
+      : 0;
+
+    const requirementWithNewId = {
+      ...newRequirement,
+      id: maxId + 1
+    };
+
+    setAnalysisResults(prev => [...prev, requirementWithNewId]);
+    setManualEntryModalOpen(false);
+
+    console.log(`✅ Exigence #${requirementWithNewId.id} ajoutée avec succès`);
+  }, [analysisResults]);
+
   const stats = useMemo<Stats>(
     () =>
       analysisResults.reduce(
@@ -281,8 +304,15 @@ export default function App() {
         stats={stats}
         onReset={handleReset}
         onOpenChat={setChatRequirement}
+        onOpenManualEntry={() => setManualEntryModalOpen(true)}
       />
       {chatRequirement && <ChatModalClaude requirement={chatRequirement} onClose={() => setChatRequirement(null)} />}
+      <ManualRequirementModal
+        isOpen={manualEntryModalOpen}
+        onClose={() => setManualEntryModalOpen(false)}
+        onAddRequirement={handleAddManualRequirement}
+        nextId={analysisResults.length > 0 ? Math.max(...analysisResults.map(r => r.id)) + 1 : 1}
+      />
 
       {/* CSS pour l'animation du spinner */}
       <style>{`

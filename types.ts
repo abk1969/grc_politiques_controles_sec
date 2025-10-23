@@ -11,6 +11,10 @@ export interface AnalysisResult extends Requirement {
   iso27002Mapping: string;
   cobit5Mapping: string;
   analysis: string;
+  // Champs enrichis pour analyse agentique
+  threat?: string;              // Menace associée
+  risk?: string;                // Risque associé
+  controlImplementation?: string; // Implémentation du contrôle
 }
 
 export enum AppState {
