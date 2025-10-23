@@ -5,17 +5,6 @@
   "framework": "vite",
   "devCommand": "npm run dev",
   "installCommand": "npm install",
-  "env": {
-    "VITE_API_URL": "@vite_api_url"
-  },
-  "build": {
-    "env": {
-      "VITE_API_URL": "@vite_api_url",
-      "ANTHROPIC_API_KEY": "@anthropic_api_key",
-      "CLAUDE_API_KEY": "@claude_api_key",
-      "GEMINI_API_KEY": "@gemini_api_key"
-    }
-  },
   "rewrites": [
     {
       "source": "/(.*)",
