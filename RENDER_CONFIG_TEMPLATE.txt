@@ -1,0 +1,105 @@
+===========================================
+RENDER.COM - CONFIGURATION À COPIER-COLLER
+===========================================
+
+📋 FORMULAIRE WEB SERVICE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Name:
+grc-backend
+
+Region:
+Frankfurt (EU Central)
+
+Branch:
+main
+
+Root Directory:
+backend
+
+Build Command:
+pip install -r requirements.txt
+
+Start Command:
+uvicorn main:app --host 0.0.0.0 --port $PORT
+
+Instance Type:
+Free
+
+
+🔐 VARIABLES D'ENVIRONNEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️ Cliquer "Advanced" avant d'ajouter ces variables!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Variable 1:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Key: PYTHONUNBUFFERED
+Value: 1
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Variable 2:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Key: ANTHROPIC_API_KEY
+Value: [COLLER VOTRE CLÉ ICI - commence par sk-ant-]
+
+Où trouver: https://console.anthropic.com/settings/keys
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Variable 3:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Key: CLAUDE_API_KEY
+Value: [MÊME CLÉ que ANTHROPIC_API_KEY]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Variable 4:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Key: GEMINI_API_KEY
+Value: [COLLER VOTRE CLÉ ICI - commence par AIza]
+
+Où trouver: https://aistudio.google.com/app/apikey
+
+
+✅ APRÈS DÉPLOIEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Votre URL backend sera:
+https://grc-backend-XXXXXX.onrender.com
+
+⚠️ COPIER CETTE URL - vous en aurez besoin pour Vercel!
+
+Test de santé:
+https://grc-backend-XXXXXX.onrender.com/health
+
+Doit retourner:
+{"status":"healthy","timestamp":"...","version":"1.0.0"}
+
+
+🔗 POUR VERCEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Dashboard Vercel → Settings → Environment Variables
+
+Ajouter:
+Key:   VITE_API_URL
+Value: https://grc-backend-XXXXXX.onrender.com
+
+Cocher:
+☑ Production
+☑ Preview
+☑ Development
+
+Puis: Deployments → ... → Redeploy
+
+
+📞 SUPPORT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Problèmes? Consultez:
+- DEPLOY_CHECKLIST.md
+- RENDER_DEPLOYMENT_GUIDE.md
+
+Ou envoyez-moi:
+- Les logs Render (si erreur backend)
+- L'erreur Console (F12 si erreur frontend)
