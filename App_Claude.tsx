@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { parseExcelFile, getExcelHeaders } from './services/excelService';
-import { analyzeComplianceData } from './services/claudeService';
+import { analyzeComplianceData } from './services/claudeServiceSecure';
 import type { AnalysisResult, Stats, ColumnMapping } from './types';
 import { AppState } from './types';
 import { ErrorBoundary } from './components/ErrorBoundary';

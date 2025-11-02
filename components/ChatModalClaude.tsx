@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { createRequirementChat, sendChatMessageStream } from '../services/claudeService';
+import { createRequirementChat, sendChatMessageStream } from '../services/claudeServiceSecure';
 import { IconSend } from './icons';
 import type { AnalysisResult, ChatMessage, ClaudeConversation } from '../types';
 

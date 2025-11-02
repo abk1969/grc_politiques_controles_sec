@@ -295,3 +295,35 @@ export async function checkClaudeAvailability(): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * ALIAS pour compatibilité avec l'ancien code
+ */
+export const analyzeComplianceData = analyzeRequirements;
+
+/**
+ * ALIAS pour compatibilité - Créer une conversation pour un requirement
+ */
+export function createRequirementChat(requirement: AnalysisResult) {
+  return {
+    requirement,
+    messages: [] as Array<{ role: 'user' | 'assistant'; content: string }>
+  };
+}
+
+/**
+ * ALIAS pour compatibilité - Envoyer un message de chat en streaming
+ */
+export async function sendChatMessageStream(
+  conversation: { requirement: AnalysisResult; messages: Array<{ role: 'user' | 'assistant'; content: string }> },
+  userMessage: string,
+  onChunk: (text: string) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const newMessages = [
+    ...conversation.messages,
+    { role: 'user' as const, content: userMessage }
+  ];
+
+  await chatWithClaude(newMessages, conversation.requirement, onChunk, signal);
+}

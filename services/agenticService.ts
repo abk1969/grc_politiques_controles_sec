@@ -1,4 +1,3 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { AnalysisResult } from '../types';
 import { z } from 'zod';
 
@@ -63,24 +62,41 @@ export class AgenticAnalysisError extends Error {
 }
 
 // ============================================================================
-// CONFIGURATION API
+// CONFIGURATION API - SÉCURISÉE (Utilise backend proxy)
 // ============================================================================
 
-const getAPIKey = (): string => {
-  const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
-  if (!apiKey) {
-    throw new AgenticAnalysisError("La clé API Claude n'est pas configurée. Veuillez l'ajouter dans le fichier .env.local");
-  }
-  return apiKey;
-};
-
-const anthropic = new Anthropic({
-  apiKey: getAPIKey(),
-  dangerouslyAllowBrowser: true,
-});
+// SÉCURITÉ: Plus besoin de clés API côté frontend!
+// Tous les appels Claude passent maintenant par le backend proxy
 
 // Configuration backend API
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001';
+
+/**
+ * Helper pour appeler Claude via le backend proxy (SÉCURISÉ)
+ * Remplace anthropic.messages.create()
+ */
+async function callClaudeProxy(params: {
+  model: string;
+  max_tokens: number;
+  messages: Array<{ role: string; content: string }>;
+  system?: string;
+  temperature?: number;
+}): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/ai/claude/analyze`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(params)
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Erreur backend' }));
+    throw new AgenticAnalysisError(`Erreur backend: ${error.detail || response.statusText}`);
+  }
+
+  return await response.json();
+}
 
 // ============================================================================
 // SERVICES API BACKEND SCF
@@ -118,7 +134,7 @@ async function searchSCFControls(requirementText: string, topK: number = 5): Pro
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 secondes
 
-    const response = await fetch(`${BACKEND_URL}/api/scf/search`, {
+    const response = await fetch(`${API_BASE_URL}/api/scf/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -150,7 +166,7 @@ async function validateSCFReference(scfRef: string): Promise<SCFValidationResult
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 secondes
 
-    const response = await fetch(`${BACKEND_URL}/api/scf/validate`, {
+    const response = await fetch(`${API_BASE_URL}/api/scf/validate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scf_reference: scfRef }),
@@ -178,7 +194,7 @@ async function findThreatAndRisk(requirementText: string): Promise<ThreatRiskRes
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 secondes
 
-    const response = await fetch(`${BACKEND_URL}/api/scf/threat-risk`, {
+    const response = await fetch(`${API_BASE_URL}/api/scf/threat-risk`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requirement_text: requirementText }),
@@ -281,8 +297,8 @@ CRITÈRES:
 Réponds UNIQUEMENT avec le texte du point de vérification, sans préambule.`;
 
     try {
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const response = await callClaudeProxy({
+        model: "claude-3-5-sonnet-20241022",
         max_tokens: 500,
         temperature: 0.1,
         messages: [{ role: "user", content: prompt }]
@@ -387,8 +403,8 @@ Justification: [1 phrase]
 Réponds UNIQUEMENT avec ce format, sans markdown.`;
 
     try {
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const response = await callClaudeProxy({
+        model: "claude-3-5-sonnet-20241022",
         max_tokens: 400,
         temperature: 0.1,
         messages: [{ role: "user", content: prompt }]
@@ -436,8 +452,8 @@ Justification: [1 phrase]
 Réponds UNIQUEMENT avec ce format, sans markdown.`;
 
     try {
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const response = await callClaudeProxy({
+        model: "claude-3-5-sonnet-20241022",
         max_tokens: 400,
         temperature: 0.1,
         messages: [{ role: "user", content: prompt }]
@@ -485,8 +501,8 @@ Justification: [1 phrase]
 Réponds UNIQUEMENT avec ce format, sans markdown.`;
 
     try {
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const response = await callClaudeProxy({
+        model: "claude-3-5-sonnet-20241022",
         max_tokens: 400,
         temperature: 0.1,
         messages: [{ role: "user", content: prompt }]
@@ -573,8 +589,8 @@ CRITÈRES:
 Réponds UNIQUEMENT avec la description de la menace, sans préambule ni markdown.`;
 
     try {
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const response = await callClaudeProxy({
+        model: "claude-3-5-sonnet-20241022",
         max_tokens: 600,
         temperature: 0.15,
         messages: [{ role: "user", content: prompt }]
@@ -672,8 +688,8 @@ CRITÈRES:
 Réponds UNIQUEMENT avec la description du risque, sans préambule ni markdown.`;
 
     try {
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const response = await callClaudeProxy({
+        model: "claude-3-5-sonnet-20241022",
         max_tokens: 600,
         temperature: 0.15,
         messages: [{ role: "user", content: prompt }]
@@ -713,8 +729,8 @@ CRITÈRES:
 Réponds UNIQUEMENT avec le guide d'implémentation, sans préambule ni markdown.`;
 
     try {
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const response = await callClaudeProxy({
+        model: "claude-3-5-sonnet-20241022",
         max_tokens: 700,
         temperature: 0.2,
         messages: [{ role: "user", content: prompt }]
@@ -748,8 +764,8 @@ TA MISSION: Rédige une analyse justificative concise (1-2 phrases) expliquant l
 Réponds UNIQUEMENT avec l'analyse de justification, sans préambule ni markdown.`;
 
     try {
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const response = await callClaudeProxy({
+        model: "claude-3-5-sonnet-20241022",
         max_tokens: 300,
         temperature: 0.1,
         messages: [{ role: "user", content: prompt }]
