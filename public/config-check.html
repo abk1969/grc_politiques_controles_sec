@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Configuration Check - GRC App</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #00ff00;
+        }
+        .test {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #333;
+        }
+        .success { background: #002200; }
+        .error { background: #220000; color: #ff6666; }
+    </style>
+</head>
+<body>
+    <h1>🔍 Configuration Diagnostics</h1>
+    <div id="results"></div>
+
+    <script>
+        const results = document.getElementById('results');
+
+        function addResult(title, status, message) {
+            const div = document.createElement('div');
+            div.className = `test ${status}`;
+            div.innerHTML = `<strong>${title}</strong><br>${message}`;
+            results.appendChild(div);
+        }
+
+        // Test 1: Environment variables
+        const apiUrl = import.meta.env.VITE_API_URL;
+        if (apiUrl) {
+            addResult('✅ VITE_API_URL', 'success', `Configured: ${apiUrl}`);
+        } else {
+            addResult('❌ VITE_API_URL', 'error', 'NOT CONFIGURED - Add this in Vercel environment variables');
+        }
+
+        // Test 2: Backend connectivity
+        async function testBackend() {
+            const testUrl = apiUrl || 'http://localhost:8001';
+            try {
+                addResult('⏳ Testing Backend', 'test', `Connecting to ${testUrl}/health...`);
+
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 10000);
+
+                const response = await fetch(`${testUrl}/health`, {
+                    signal: controller.signal
+                });
+                clearTimeout(timeout);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    addResult('✅ Backend Health', 'success', `Backend is UP: ${JSON.stringify(data)}`);
+                } else {
+                    addResult('❌ Backend Health', 'error', `HTTP ${response.status}: ${response.statusText}`);
+                }
+            } catch (error) {
+                addResult('❌ Backend Connection', 'error', `Cannot reach backend: ${error.message}<br><br>Possible causes:<br>1. Backend not deployed yet<br>2. Wrong VITE_API_URL<br>3. CORS not configured<br>4. Backend service down`);
+            }
+        }
+
+        // Test 3: AI Proxy endpoints
+        async function testAIProxy() {
+            const testUrl = apiUrl || 'http://localhost:8001';
+            try {
+                addResult('⏳ Testing AI Proxy', 'test', 'Checking /api/ai/health...');
+
+                const response = await fetch(`${testUrl}/api/ai/health`);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    addResult('✅ AI Proxy Health', 'success', `AI services: ${JSON.stringify(data)}`);
+                } else {
+                    addResult('⚠️ AI Proxy', 'error', `HTTP ${response.status} - AI proxy may not be configured`);
+                }
+            } catch (error) {
+                addResult('⚠️ AI Proxy', 'error', `AI proxy check failed: ${error.message}`);
+            }
+        }
+
+        // Run tests
+        testBackend();
+        testAIProxy();
+
+        // Display build info
+        addResult('📦 Build Info', 'success', `Built at: ${new Date().toISOString()}<br>User Agent: ${navigator.userAgent}`);
+    </script>
+</body>
+</html>
