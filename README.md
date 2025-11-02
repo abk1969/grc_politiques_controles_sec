@@ -9,6 +9,22 @@ Application fullstack de mapping automatique de conformité GRC utilisant l'IA (
 
 ---
 
+## 🚨 Vercel montre une page blanche?
+
+**C'est normal!** Le frontend est déployé mais le backend n'est pas encore configuré.
+
+### ⚡ Solution Express (15 minutes):
+👉 **Suivre le guide:** [DEPLOY_NOW.md](./DEPLOY_NOW.md)
+
+Ou en résumé:
+1. **Backend:** Déployer sur [Render.com](https://render.com) (7 min)
+2. **Vercel:** Ajouter `VITE_API_URL` dans Environment Variables (3 min)
+3. **Test:** Ouvrir `/config-check.html` (5 min)
+
+📖 Guide détaillé: [RENDER_DEPLOYMENT_GUIDE.md](./RENDER_DEPLOYMENT_GUIDE.md)
+
+---
+
 ## 🌟 Fonctionnalités
 
 ### ✨ Analyse Hybride
