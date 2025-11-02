@@ -493,3 +493,65 @@ export const saveClaudeResults = async (
     throw new MLAPIError('Erreur lors de la sauvegarde des résultats Claude', undefined, error);
   }
 };
+
+/**
+ * Enrichit les résultats Claude avec les champs agentiques (threat, risk, controlImplementation)
+ * Cette fonction est OPTIONNELLE et peut être appelée après Claude pour ajouter les champs enrichis
+ *
+ * @param results - Résultats Claude à enrichir
+ * @param onProgress - Callback optionnel pour suivre la progression
+ * @returns Résultats enrichis avec threat, risk, controlImplementation
+ */
+export const enrichResultsWithAgenticAnalysis = async (
+  results: AnalysisResult[],
+  onProgress?: (current: number, total: number) => void
+): Promise<AnalysisResult[]> => {
+  try {
+    // Importer dynamiquement le service agentique
+    const { analyzeManualRequirement } = await import('./agenticService');
+
+    const enrichedResults: AnalysisResult[] = [];
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+
+      try {
+        // Appeler le service agentique pour enrichir
+        const agenticResult = await analyzeManualRequirement(
+          result.requirement,
+          result.id
+        );
+
+        // Fusionner les résultats: garder les mappings Claude, ajouter les champs enrichis
+        const enriched: AnalysisResult = {
+          ...result,
+          threat: agenticResult.threat,
+          risk: agenticResult.risk,
+          controlImplementation: agenticResult.controlImplementation
+        };
+
+        enrichedResults.push(enriched);
+
+        // Appeler le callback de progression
+        if (onProgress) {
+          onProgress(i + 1, results.length);
+        }
+
+        console.log(`✅ Enrichissement ${i + 1}/${results.length}: Exigence #${result.id} enrichie`);
+      } catch (error) {
+        console.warn(`⚠️ Enrichissement échoué pour exigence #${result.id}:`, error);
+        // En cas d'erreur, garder le résultat original sans enrichissement
+        enrichedResults.push(result);
+      }
+    }
+
+    return enrichedResults;
+  } catch (error) {
+    console.error('Erreur lors de l\'enrichissement agentique:', error);
+    throw new MLAPIError(
+      'Erreur lors de l\'enrichissement agentique des résultats',
+      undefined,
+      error
+    );
+  }
+};

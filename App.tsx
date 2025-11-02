@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { parseExcelFile, getExcelHeaders } from './services/excelService';
 import { analyzeComplianceData } from './services/claudeService';
-import { uploadExcelFile, analyzeBatch, getRequirements, saveClaudeResults, type ImportSession } from './services/mlService';
+import { uploadExcelFile, analyzeBatch, getRequirements, saveClaudeResults, enrichResultsWithAgenticAnalysis, type ImportSession } from './services/mlService';
 import type { AnalysisResult, Stats, ColumnMapping } from './types';
 import { AppState } from './types';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -112,10 +112,29 @@ export default function App() {
       setProgressTotal(0);
       console.log(`✅ Analyse Claude terminée: ${claudeResults.length} résultats`);
 
-      // ÉTAPE 3.5: Sauvegarder les résultats Claude dans PostgreSQL
+      // ÉTAPE 3.3: Enrichissement optionnel avec analyse agentique (threat, risk, implementation)
+      // Cette étape est OPTIONNELLE et peut être désactivée
+      let enrichedResults = claudeResults;
+      try {
+        console.log('🤖 Enrichissement agentique en cours (threat, risk, implementation)...');
+        enrichedResults = await enrichResultsWithAgenticAnalysis(
+          claudeResults,
+          (current: number, total: number) => {
+            console.log(`  Enrichissement: ${current}/${total}`);
+          }
+        );
+        console.log(`✅ Enrichissement agentique terminé: ${enrichedResults.length} résultats enrichis`);
+        setAnalysisResults(enrichedResults);
+      } catch (enrichError) {
+        console.warn('⚠️ Enrichissement agentique échoué, utilisation des résultats Claude sans enrichissement:', enrichError);
+        // Continuer avec les résultats Claude non enrichis
+        enrichedResults = claudeResults;
+      }
+
+      // ÉTAPE 3.5: Sauvegarder les résultats Claude (enrichis ou non) dans PostgreSQL
       try {
         console.log('💾 Sauvegarde des résultats Claude dans PostgreSQL...');
-        const saveResult = await saveClaudeResults(claudeResults, selectedFile.name, importSessionId || undefined);
+        const saveResult = await saveClaudeResults(enrichedResults, selectedFile.name, importSessionId || undefined);
         console.log(`✅ ${saveResult.saved_count} résultats Claude sauvegardés (Session: ${saveResult.import_session_id})`);
         if (!importSessionId) {
           setCurrentImportSessionId(saveResult.import_session_id);

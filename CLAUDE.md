@@ -61,71 +61,97 @@ VITE_API_URL=http://localhost:8001
 
 ## Critical Architecture Patterns
 
-### 1. Hybrid Analysis Pipeline (`App.tsx:53-169`)
+### 1. Hybrid Analysis Pipeline (`App.tsx`)
 
 **State Machine Flow**:
 ```
 IDLE → MAPPING → PARSING → ANALYZING → SUCCESS
 ```
 
-**4-Phase Pipeline**:
-1. **Client-Side Excel Parsing** (lines 63-67): `excelService.parseExcelFile()`
-2. **PostgreSQL Upload** (lines 76-87): `mlService.uploadExcelFile()` → creates `ImportSession`
-3. **Claude AI Analysis** (lines 94-107): `claudeService.analyzeRequirements()` → generates full mappings
-4. **Background ML Analysis** (lines 127-160): `mlService.analyzeBatch()` → runs in parallel without blocking
+**6-Phase Pipeline**:
+1. **Client-Side Excel Parsing**: `excelService.parseExcelFile()` extracts requirements from Excel
+2. **PostgreSQL Upload**: `mlService.uploadExcelFile()` creates `ImportSession` record
+3. **Claude AI Analysis**: `claudeService.analyzeRequirements()` generates full mappings with streaming progress
+4. **Agentive Enrichment** (Optional): `agenticService` adds threat/risk/implementation fields
+5. **Database Persistence**: `mlService.saveClaudeResults()` saves to PostgreSQL with `import_session_id` linkage
+6. **Background ML Analysis**: `mlService.analyzeBatch()` runs 1 second later in background (non-blocking)
 
-**Key Pattern**: Claude analysis completes first and displays results; ML analysis runs asynchronously in background and updates database independently.
+**Key Pattern**: Claude completes first (30s) and displays results immediately; ML analysis runs asynchronously in background (5min) and updates database independently. Agentive enrichment is optional and gracefully degrades on failure.
 
-### 2. Import Session Traceability (`backend/models.py:149-185`)
+### 2. Import Session Traceability (`backend/models.py`)
 
 **Purpose**: Track every import operation for history and recovery.
 
 **Flow**:
 - `POST /api/import/excel` creates `ImportSession` with metadata
 - All `Requirement` and `ComplianceMapping` records link to `import_session_id`
-- Frontend can reload past sessions via `ImportHistoryModal`
+- Frontend can reload past sessions via `ImportHistoryModal` → `mlService.loadImportSession()`
 
 **Critical Fields**:
 - `analysis_source`: Tracks which AI/ML engine analyzed (claude/gemini/ml/hybrid)
-- `metadata`: JSON field for extensible tracking
+- `session_metadata`: JSONB field for extensible tracking
 - `status`: processing/completed/failed
+- `filename`, `source_sheet`: Original file metadata
+- `total_requirements`: Count for validation
 
-### 3. ML Service Singleton with Lazy Loading (`backend/ml_service.py:19-48`)
+### 3. ML Model Singleton with Thread-Safe Lazy Loading (`backend/ml_model_singleton.py`)
 
-**Why**: Sentence-Transformers models are 400MB+ in memory; load on-demand only.
+**Why**: Sentence-Transformers models consume 400MB+ RAM. Loading multiple instances causes OOM crashes.
 
-**Pattern**:
+**Thread-Safe Pattern** (Double-Check Locking):
 ```python
-class MLService:
-    _model = None  # Class variable
+class MLModelSingleton:
+    _instance = None
+    _lock = threading.Lock()
+    _model = None
 
-    def _load_model(self):
-        if MLService._model is None:
-            MLService._model = SentenceTransformer('paraphrase-multilingual-mpnet-base-v2')
+    def get_model(self):
+        if self._model is None:
+            with self._lock:
+                if self._model is None:  # Double-check after acquiring lock
+                    self._model = SentenceTransformer('paraphrase-multilingual-mpnet-base-v2')
+        return self._model
+
+# Global access via get_shared_ml_model()
 ```
 
+**Usage**: All services (`MLMappingService`, `SCFKnowledgeBase`) share ONE model instance.
+
 **Caching Strategy**:
-- File cache: `backend/cache/scf_embeddings.pkl` (persisted across restarts)
-- Memory cache: Loaded embeddings kept in `_scf_embeddings` dict
-- Cache invalidation: Model name mismatch triggers rebuild
+- **File cache**: `backend/cache/scf_embeddings.pkl` (persisted across restarts, Docker volume)
+- **Memory cache**: Model stays loaded for process lifetime
+- **Cache invalidation**: Model name mismatch triggers rebuild
+- **Cache config**: Centralized in `backend/cache_config.py` with Docker detection
 
-### 4. SCF Knowledge Base Singleton (`backend/scf_knowledge_service.py:301-308`)
+### 4. SCF Knowledge Base Singleton (`backend/main.py` + `backend/scf_knowledge_service.py`)
 
-**Global Instance Pattern**:
+**Thread-Safe Initialization Pattern** (`backend/main.py`):
 ```python
-_scf_kb_instance = None
+_scf_kb = None
+_scf_kb_lock = threading.Lock()
+_scf_kb_error = None
 
 def get_scf_knowledge_base():
-    global _scf_kb_instance
-    if _scf_kb_instance is None:
-        _scf_kb_instance = SCFKnowledgeBase()
-    return _scf_kb_instance
+    global _scf_kb, _scf_kb_error
+    if _scf_kb is None and _scf_kb_error is None:
+        with _scf_kb_lock:
+            if _scf_kb is None and _scf_kb_error is None:
+                try:
+                    _scf_kb = SCFKnowledgeBase()
+                except Exception as e:
+                    _scf_kb_error = e  # Store error to prevent retry storms
+                    raise
+    if _scf_kb_error:
+        raise _scf_kb_error
+    return _scf_kb
 ```
 
 **Data Source**: Excel file at `/app/scf_knowledge_base.xlsx` with 1342+ SCF controls
 - Sheet "SCF 2025.2": Control definitions
 - Sheet "Threat Catalog": Associated threats
 - Sheet "Risk Catalog": Associated risks
+
+**Lazy Loading**: Initialized on first API request needing SCF data, not at startup.
 
 ### 5. Database Schema Design (`database/schema.sql`)
 
@@ -178,15 +204,54 @@ const abortControllerRef = useRef<AbortController | null>(null)
 - Enables cancellation of Claude analysis mid-flight
 - Cleanup in effect cleanup function
 
-### 8. Backend Timeout Handling (`services/mlService.ts:334-452`)
+### 8. Agentive Enrichment Pattern (`App.tsx` + `services/agenticService.ts`)
+
+**Purpose**: Optional enhancement adding threat, risk, and control implementation analysis.
+
+**Graceful Degradation Pattern**:
+```typescript
+try {
+  // Attempt agentive enrichment
+  enrichedResults = await enrichResultsWithAgenticAnalysis(claudeResults);
+  console.log('✓ Agentive enrichment successful');
+} catch (error) {
+  console.warn('⚠ Agentive enrichment failed, continuing with Claude results only');
+  enrichedResults = claudeResults; // Use Claude results without enrichment
+}
+```
+
+**Why**: Agentive analysis is valuable but not critical. System continues to function with Claude-only results if enrichment fails.
+
+**Enriched Fields** (stored in `compliance_mappings` table):
+- `threat`: Security threats addressed by the control
+- `risk`: Associated risk scenarios
+- `control_implementation`: Practical implementation guidance
+
+**UI Integration**: Dashboard displays enriched fields when available; filters allow toggling enrichment visibility.
+
+### 9. Backend Timeout Handling (`services/mlService.ts`)
 
 **Critical Pattern**: Import history endpoints have **10-15 second timeout** protection.
 
 ```typescript
-const timeoutId = setTimeout(() => controller.abort(), 10000)
+const controller = new AbortController();
+const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+try {
+  const response = await fetch(url, { signal: controller.signal });
+  clearTimeout(timeoutId);
+} catch (error) {
+  if (error.name === 'AbortError') {
+    throw new MLAPIError('Request timeout - session trop volumineuse');
+  }
+}
 ```
 
-**Why**: PostgreSQL queries on large import sessions can exceed normal timeouts; frontend must handle gracefully.
+**Why**: PostgreSQL queries on large import sessions (1000+ requirements) can exceed normal timeouts; frontend must handle gracefully.
+
+**Affected Endpoints**:
+- `getImportSessions()`: 10s timeout
+- `loadImportSession(id)`: 15s timeout (more complex JOIN queries)
 
 ## Component Architecture
 
@@ -243,6 +308,8 @@ const timeoutId = setTimeout(() => controller.abort(), 10000)
 
 **agenticService.ts** (`services/agenticService.ts`)
 - Agentive analysis enhancements (threat/risk/implementation)
+- Multi-agent orchestration pattern
+- Graceful degradation on failure (analysis continues without enrichment)
 
 ## Data Flow
 
@@ -263,17 +330,22 @@ const timeoutId = setTimeout(() => controller.abort(), 10000)
 6. FRONTEND: Claude analyzes all requirements
    ↓ (generates AnalysisResult[] with SCF/ISO/COBIT mappings)
 
-7. FRONTEND: POST /api/save-claude-results
+7. FRONTEND: Agentive enrichment (optional)
+   ↓ (adds threat, risk, controlImplementation fields)
+   ↓ (gracefully degrades if fails)
+
+8. FRONTEND: POST /api/save-claude-results
    ↓ (creates Requirement + ComplianceMapping records)
    ↓ (links to import_session_id)
+   ↓ (stores enriched fields if available)
 
-8. FRONTEND: setTimeout → POST /api/analyze/batch (background)
+9. FRONTEND: setTimeout(1000) → POST /api/analyze/batch (background)
    ↓ (ML finds similar SCF controls via embeddings)
    ↓ (updates requirement.analysis_status = 'analyzed')
 
-9. DASHBOARD: Displays results
+10. DASHBOARD: Displays results (enriched fields visible if available)
    ↓
-10. USER: Can chat per-requirement, filter, or load past imports
+11. USER: Can chat per-requirement, filter by framework/enrichment, or load past imports
 ```
 
 ## Backend API Routes
@@ -282,14 +354,15 @@ const timeoutId = setTimeout(() => controller.abort(), 10000)
 
 | Endpoint | Method | Purpose | Lines |
 |----------|--------|---------|-------|
-| `/api/import/excel` | POST | Bulk Excel import → creates ImportSession | 113-210 |
-| `/api/analyze/batch` | POST | ML batch analysis via embeddings | 318-375 |
-| `/api/save-claude-results` | POST | Save Claude analysis to database | 381-462 |
-| `/api/import-sessions` | GET | List past imports (paginated) | 468-516 |
-| `/api/import-sessions/{id}/results` | GET | Load specific import | 519-581 |
-| `/api/requirements` | GET | List requirements (filterable) | 216-230 |
-| `/api/stats` | GET | Dashboard statistics | 588-605 |
-| `/api/analyze/similarity` | POST | Find similar SCF controls | 289-316 |
+| `/api/import/excel` | POST | Bulk Excel import → creates ImportSession with duplicate detection |
+| `/api/analyze/batch` | POST | ML batch analysis via embeddings (background processing) |
+| `/api/save-claude-results` | POST | Save Claude + Agentive results to database |
+| `/api/import-sessions` | GET | List past imports (paginated, may timeout on large datasets) |
+| `/api/import-sessions/{id}/results` | GET | Load specific import with full mappings |
+| `/api/requirements` | GET | List requirements (filterable by status, framework) |
+| `/api/stats` | GET | Dashboard statistics from materialized views |
+| `/api/analyze/similarity` | POST | Find similar SCF controls using embeddings |
+| `/health` | GET | Health check endpoint for all services |
 
 ## Docker Architecture
 
@@ -330,18 +403,38 @@ const timeoutId = setTimeout(() => controller.abort(), 10000)
 }
 ```
 
-**Load Pattern** (`backend/ml_service.py:145-162`):
-1. Check if file exists
-2. Load pickle
-3. Verify model name matches current model
-4. If mismatch → recalculate and save
+**Load Pattern** (`backend/ml_service.py`):
+1. Check if file exists via `cache_config.get_embeddings_cache_path()`
+2. Load pickle with model name validation
+3. If model name mismatch → recalculate all embeddings and save
+4. If file missing → calculate on-demand during first similarity search
+
+**Docker Volume Persistence**: `ml_cache:/app/cache` ensures embeddings survive container restarts
+
+**Cache Configuration** (`backend/cache_config.py`):
+- Detects Docker vs local environment
+- Provides centralized cache path management
+- Ensures consistency across services
 
 ### Migration Pattern
 
 **Current Schema**: `database/schema.sql` (base tables)
-**Recent Migration**: `database/migration_add_import_sessions.sql`
+**Recent Migrations**:
+- `migration_add_import_sessions.sql`: Import traceability
+- `migration_add_enriched_fields.sql`: Agentive enrichment fields
 
-**Pattern**: Incremental SQL files for schema changes; apply manually or via Alembic.
+**Pattern**: Incremental SQL files with idempotent checks; apply manually or via Alembic.
+
+**Idempotent Design Example**:
+```sql
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='compliance_mappings' AND column_name='threat') THEN
+        ALTER TABLE compliance_mappings ADD COLUMN threat TEXT;
+    END IF;
+END $$;
+```
 
 ## Performance Considerations
 
@@ -360,6 +453,41 @@ const timeoutId = setTimeout(() => controller.abort(), 10000)
 - **useMemo**: Expensive filtering calculations
 - **AbortController**: Cancel in-flight requests
 - **Streaming responses**: Real-time chat feedback
+
+### Error Handling and Resilience
+
+**Frontend Error Handling Pattern** (`services/mlService.ts`):
+```typescript
+export class MLAPIError extends Error {
+  constructor(message: string, public statusCode?: number, public originalError?: unknown) {
+    super(message);
+    this.name = 'MLAPIError';
+  }
+}
+
+// Wrapper pattern for all fetch calls
+try {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    throw new MLAPIError(`HTTP ${response.status}: ${response.statusText}`, response.status);
+  }
+  return await response.json();
+} catch (error) {
+  if (error instanceof MLAPIError) throw error;
+  throw new MLAPIError('Network error', undefined, error);
+}
+```
+
+**Backend Error Prevention**:
+- **Duplicate detection**: Silently skips duplicate requirements during import
+- **Retry storms prevention**: SCF knowledge base stores initialization errors to prevent infinite retries
+- **Thread-safe initialization**: Double-check locking prevents race conditions
+- **Graceful degradation**: Agentive enrichment failure doesn't block analysis
+
+**Database Resilience**:
+- **Health checks**: Docker waits for PostgreSQL health before starting backend
+- **Persistent volumes**: Data survives container restarts
+- **Idempotent migrations**: Safe to run multiple times
 
 ## Important Constraints
 
@@ -390,24 +518,33 @@ const timeoutId = setTimeout(() => controller.abort(), 10000)
 ## Critical Code Locations
 
 ### Backend Service Initialization
-- `backend/main.py:63-81`: Lazy SCF knowledge base loading
-- `backend/main.py:29-40`: Global ML service instance
+- `backend/main.py`: SCF knowledge base lazy loading with thread-safe double-check locking
+- `backend/ml_model_singleton.py`: Global ML model singleton
+- `backend/cache_config.py`: Cache directory configuration (Docker vs local detection)
 
 ### Frontend Analysis Pipeline
-- `App.tsx:53-169`: 4-phase analysis orchestration
-- `App.tsx:127-160`: Background ML launch (non-blocking)
+- `App.tsx`: Complete 6-phase analysis orchestration (Excel parse → Claude → Agentive → Save → ML)
+- `App.tsx`: Background ML launch (non-blocking, 1 second delay after results display)
+- `App.tsx`: AbortController pattern for cancelling in-flight Claude requests
 
 ### Database Operations
-- `backend/models.py`: SQLAlchemy ORM models
-- `database/schema.sql:138-156`: Critical indexes
-- `database/schema.sql:190-223`: Pre-computed views
+- `backend/models.py`: SQLAlchemy ORM models (Requirement, ComplianceMapping, ImportSession)
+- `database/schema.sql`: Core schema with critical indexes and materialized views
+- `database/migration_add_import_sessions.sql`: Import traceability migration
+- `database/migration_add_enriched_fields.sql`: Agentive enrichment fields (threat/risk/implementation)
 
 ### ML Core Logic
-- `backend/ml_service.py:195-263`: Similarity search algorithm
-- `backend/scf_knowledge_service.py:188-226`: SCF semantic search
+- `backend/ml_service.py`: Similarity search algorithm using cosine similarity
+- `backend/scf_knowledge_service.py`: SCF semantic search and Excel data loading
 
 ### Timeout Handling
-- `services/mlService.ts:334-452`: Import session loading with 10-15s timeouts
+- `services/mlService.ts`: Import session loading with 10-15s timeouts and AbortController
+
+### Service Layer
+- `services/mlService.ts`: Backend communication with error handling and timeout protection
+- `services/claudeService.ts`: Claude API integration with streaming support
+- `services/agenticService.ts`: Agentive enrichment (threat/risk/implementation analysis)
+- `services/excelService.ts`: Client-side Excel parsing via CDN XLSX library
 
 ## Common Development Tasks
 
@@ -420,10 +557,13 @@ const timeoutId = setTimeout(() => controller.abort(), 10000)
 
 ### Changing ML Model
 
-1. Delete `backend/cache/scf_embeddings.pkl`
-2. Update model name in `backend/ml_service.py:45`
+1. Update model name in `backend/ml_model_singleton.py` (default is 'paraphrase-multilingual-mpnet-base-v2')
+2. Delete `backend/cache/scf_embeddings.pkl` (or let cache invalidation handle it)
 3. Restart backend → automatic recalculation on first query
-4. **Warning**: Confidence scores may change; consider reanalyzing existing mappings
+4. **Warning**:
+   - Confidence scores will change (different embedding space)
+   - Consider reanalyzing existing mappings for consistency
+   - First query will be slow (~5 min) while rebuilding cache
 
 ### Adding Analysis Source
 
@@ -433,11 +573,21 @@ const timeoutId = setTimeout(() => controller.abort(), 10000)
 
 ## Deployment Notes
 
-- **Production build**: Multi-stage Dockerfile optimizes image size
-- **Health checks**: All services have `/health` endpoints
-- **Volume persistence**: PostgreSQL data + ML cache survive container restarts
-- **CORS**: Configured for localhost development; update for production domains
-- **Environment injection**: Docker Compose passes API keys as build args
+- **Production build**: Multi-stage Dockerfile optimizes image size (Node builder → Nginx production)
+- **Health checks**: All services have `/health` endpoints (used by Docker healthcheck)
+- **Volume persistence**:
+  - `postgres_data`: PostgreSQL database (survives `docker compose down`)
+  - `ml_cache`: Embeddings cache (survives backend restarts)
+- **CORS Configuration** (`backend/main.py`):
+  - Development: All localhost ports (3000-3003, 5173)
+  - Production: Set `FRONTEND_URL` environment variable
+  - Known deployments: Hardcoded Vercel URL included
+- **Environment injection**: Docker Compose passes API keys as build args to frontend
+- **Database migrations**: Run SQL scripts manually before deployment:
+  ```bash
+  docker exec -i grc-postgres psql -U postgres -d grc_compliance < database/migration_*.sql
+  ```
+- **ML Model warm-up**: First request after deployment takes ~5 min to build embeddings cache
 
 ## External Dependencies
 

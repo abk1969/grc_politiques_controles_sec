@@ -11,10 +11,9 @@ export default defineConfig(({ mode }) => {
       },
       plugins: [react()],
       define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.ANTHROPIC_API_KEY': JSON.stringify(env.ANTHROPIC_API_KEY),
-        'process.env.CLAUDE_API_KEY': JSON.stringify(env.CLAUDE_API_KEY || env.ANTHROPIC_API_KEY)
+        // SÉCURITÉ: Clés API retirées du frontend (maintenant côté serveur uniquement)
+        // Les appels AI passent maintenant par le backend proxy /api/ai/*
+        'process.env.VITE_API_URL': JSON.stringify(env.VITE_API_URL || 'http://localhost:8001')
       },
       resolve: {
         alias: {

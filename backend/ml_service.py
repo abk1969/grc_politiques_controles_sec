@@ -14,37 +14,46 @@ from pathlib import Path
 
 from models import SCFControl
 from schemas import SimilaritySearchResponse
+from ml_model_singleton import get_shared_ml_model, get_model_name
+from cache_config import CacheConfig
 
 
 class MLMappingService:
     """
     Service ML pour le mapping automatique des exigences aux contrôles
+    Utilise un modèle ML singleton partagé pour économiser la mémoire
     """
 
     def __init__(self):
         """
-        Initialise le modèle Sentence-Transformers
+        Initialise le service ML (utilise le modèle singleton partagé)
         """
-        # Modèle multilingue performant (français + anglais)
-        self.model_name = 'paraphrase-multilingual-mpnet-base-v2'
+        # Utiliser le singleton au lieu de charger un nouveau modèle
+        logger.info("🔗 Initialisation du service ML (utilisation du modèle partagé)")
 
-        logger.info(f"🤖 Chargement du modèle ML: {self.model_name}")
+        # Le modèle sera chargé en lazy loading lors du premier appel
+        self._model = None
+        self.model_name = get_model_name()
 
-        try:
-            self.model = SentenceTransformer(self.model_name)
-            logger.info("✅ Modèle ML chargé avec succès")
-        except Exception as e:
-            logger.error(f"❌ Erreur lors du chargement du modèle: {e}")
-            raise
-
-        # Cache pour les embeddings des contrôles SCF
-        self.cache_dir = Path(__file__).parent / "cache"
-        self.cache_dir.mkdir(exist_ok=True, parents=True)
-        self.embeddings_cache_file = self.cache_dir / "scf_embeddings.pkl"
+        # Cache pour les embeddings des contrôles SCF (centralisé)
+        self.cache_dir = CacheConfig.get_cache_dir()
+        self.embeddings_cache_file = CacheConfig.get_scf_embeddings_cache()
+        logger.info(f"📁 Cache directory: {self.cache_dir}")
 
         # Cache en mémoire
         self._scf_embeddings_cache: Dict[str, np.ndarray] = {}
         self._scf_controls_cache: List[SCFControl] = []
+
+        logger.info(f"✅ Service ML initialisé (modèle: {self.model_name})")
+
+    @property
+    def model(self) -> SentenceTransformer:
+        """
+        Propriété pour accéder au modèle partagé (lazy loading)
+        """
+        if self._model is None:
+            self._model = get_shared_ml_model()
+        return self._model
 
 
     def encode_text(self, text: str) -> np.ndarray:
@@ -140,15 +149,17 @@ class MLMappingService:
             # Encoder tous les textes
             embeddings = self.encode_batch(texts)
 
-            # Sauvegarder dans le cache
-            cache_data = {
-                'embeddings': embeddings,
-                'control_ids': [c.control_id for c in controls],
-                'model_name': self.model_name
-            }
+            # Préparer les données pour le cache
+            control_ids = [c.control_id for c in controls]
 
-            with open(self.embeddings_cache_file, 'wb') as f:
-                pickle.dump(cache_data, f)
+            # Sauvegarder dans le cache en utilisant NumPy (SÉCURISÉ - pas pickle)
+            # Format .npz avec compression pour économiser l'espace
+            np.savez_compressed(
+                self.embeddings_cache_file,
+                embeddings=embeddings,
+                control_ids=np.array(control_ids, dtype=object),
+                model_name=np.array([self.model_name], dtype=object)
+            )
 
             # Mettre en cache en mémoire
             self._scf_embeddings_cache = {
@@ -157,7 +168,7 @@ class MLMappingService:
             }
             self._scf_controls_cache = controls
 
-            logger.info(f"✅ Embeddings mis en cache: {self.embeddings_cache_file}")
+            logger.info(f"✅ Embeddings mis en cache (NumPy format): {self.embeddings_cache_file}")
 
         except Exception as e:
             logger.error(f"❌ Erreur lors de la mise en cache: {e}")
@@ -166,7 +177,7 @@ class MLMappingService:
 
     def load_scf_embeddings_cache(self) -> bool:
         """
-        Charge les embeddings depuis le cache
+        Charge les embeddings depuis le cache (format NumPy sécurisé)
 
         Returns:
             True si le cache a été chargé avec succès
@@ -176,20 +187,56 @@ class MLMappingService:
             return False
 
         try:
-            with open(self.embeddings_cache_file, 'rb') as f:
-                cache_data = pickle.load(f)
+            # Charger depuis NumPy (SÉCURISÉ - pas pickle)
+            # allow_pickle=False garantit qu'aucun code arbitraire ne peut s'exécuter
+            cache_data = np.load(self.embeddings_cache_file, allow_pickle=False)
+
+            # Extraire les données
+            embeddings = cache_data['embeddings']
+            control_ids = cache_data['control_ids'].tolist()
+            model_name = str(cache_data['model_name'][0])
 
             # Vérifier que c'est le bon modèle
-            if cache_data.get('model_name') != self.model_name:
-                logger.warning("⚠️ Cache créé avec un modèle différent, réinitialisation nécessaire")
+            if model_name != self.model_name:
+                logger.warning(f"⚠️ Cache créé avec modèle différent ({model_name} vs {self.model_name})")
+                logger.warning("⚠️ Réinitialisation nécessaire")
                 return False
 
-            logger.info(f"✅ Cache d'embeddings chargé: {len(cache_data['control_ids'])} contrôles")
+            # Reconstruire le cache en mémoire
+            self._scf_embeddings_cache = {
+                control_id: embeddings[i]
+                for i, control_id in enumerate(control_ids)
+            }
+
+            logger.info(f"✅ Cache d'embeddings chargé (NumPy): {len(control_ids)} contrôles")
             return True
 
         except Exception as e:
             logger.error(f"❌ Erreur lors du chargement du cache: {e}")
-            return False
+            logger.warning("💡 Tentative de migration depuis ancien format pickle...")
+
+            # Tentative de migration depuis l'ancien format pickle (une seule fois)
+            try:
+                import pickle
+                with open(self.embeddings_cache_file, 'rb') as f:
+                    old_cache_data = pickle.load(f)
+
+                logger.info("📦 Migration du cache pickle vers NumPy...")
+
+                # Sauvegarder au nouveau format
+                np.savez_compressed(
+                    self.embeddings_cache_file,
+                    embeddings=old_cache_data['embeddings'],
+                    control_ids=np.array(old_cache_data['control_ids'], dtype=object),
+                    model_name=np.array([old_cache_data['model_name']], dtype=object)
+                )
+
+                logger.info("✅ Migration réussie vers format NumPy sécurisé")
+                return self.load_scf_embeddings_cache()  # Recharger au nouveau format
+
+            except Exception as migration_error:
+                logger.error(f"❌ Migration impossible: {migration_error}")
+                return False
 
 
     def find_similar_controls(

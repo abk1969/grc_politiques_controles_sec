@@ -6,10 +6,7 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Build arguments for API keys (optional)
-ARG ANTHROPIC_API_KEY=""
-ARG CLAUDE_API_KEY=""
-ARG GEMINI_API_KEY=""
+# Build arguments (SÉCURITÉ: Clés API retirées)
 ARG VITE_API_URL="http://localhost:8001"
 
 # Copy package files
@@ -22,9 +19,8 @@ RUN npm ci
 COPY . .
 
 # Set environment variables for Vite build
-ENV ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
-ENV CLAUDE_API_KEY=$CLAUDE_API_KEY
-ENV GEMINI_API_KEY=$GEMINI_API_KEY
+# SÉCURITÉ: Clés API ne sont plus passées au frontend
+# Frontend appelle maintenant backend proxy /api/ai/*
 ENV VITE_API_URL=$VITE_API_URL
 
 # Build the application

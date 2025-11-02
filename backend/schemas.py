@@ -78,6 +78,10 @@ class MappingBase(BaseModel):
     mapping_source: str = 'manual'
     created_by: Optional[str] = None
     is_active: bool = True
+    # Champs enrichis (agentive analysis)
+    threat: Optional[str] = None
+    risk: Optional[str] = None
+    control_implementation: Optional[str] = None
 
 
 class MappingCreate(MappingBase):
@@ -162,6 +166,10 @@ class RequirementWithMappings(RequirementResponse):
     analysis: Optional[str] = None
     confidence_score: Optional[float] = None
     mapping_source: Optional[str] = None
+    # Champs enrichis (agentive analysis)
+    threat: Optional[str] = None
+    risk: Optional[str] = None
+    control_implementation: Optional[str] = None
 
     class Config:
         from_attributes = True

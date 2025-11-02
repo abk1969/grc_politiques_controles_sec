@@ -2,6 +2,7 @@
 Service de base de connaissances SCF
 Charge et indexe le fichier SCF Excel pour permettre des recherches sémantiques précises
 Avec cache persistant pour reprise après interruption
+Utilise un modèle ML singleton partagé pour économiser la mémoire
 """
 
 import openpyxl
@@ -12,6 +13,8 @@ import logging
 import pickle
 import os
 import hashlib
+from ml_model_singleton import get_shared_ml_model, get_model_name
+from cache_config import CacheConfig
 
 logger = logging.getLogger(__name__)
 
@@ -19,21 +22,27 @@ class SCFKnowledgeBase:
     """
     Base de connaissances SCF chargée depuis le fichier Excel
     Utilise des embeddings pour la recherche sémantique
+    Utilise un modèle ML singleton partagé et cache centralisé
     """
 
-    def __init__(self, excel_path: str = '/app/scf_knowledge_base.xlsx', cache_dir: str = '/app/cache'):
+    def __init__(self, excel_path: str = '/app/scf_knowledge_base.xlsx', cache_dir: Optional[str] = None):
         self.excel_path = excel_path
-        self.cache_dir = cache_dir
+
+        # Utiliser la configuration centralisée du cache
+        if cache_dir is None:
+            self.cache_dir = str(CacheConfig.get_cache_dir())
+        else:
+            self.cache_dir = cache_dir
+            # Créer le répertoire si spécifié manuellement
+            os.makedirs(cache_dir, exist_ok=True)
+
         self.controls: List[Dict] = []
         self.threats: List[str] = []
         self.risks: List[str] = []
 
-        # Modèle de similarité sémantique (déjà chargé dans ml_service.py)
+        # Modèle de similarité sémantique (partagé via singleton)
         self.model = None
         self.control_embeddings = None
-
-        # Créer le répertoire de cache s'il n'existe pas
-        os.makedirs(cache_dir, exist_ok=True)
 
         logger.info("📚 Initialisation de la base de connaissances SCF...")
         self._load_scf_controls()
@@ -117,19 +126,30 @@ class SCFKnowledgeBase:
         return f"scf_embeddings_{model_name.replace('/', '_')}_{controls_hash}"
 
     def _get_cache_path(self, cache_key: str) -> str:
-        """Retourne le chemin complet du fichier cache"""
-        return os.path.join(self.cache_dir, f"{cache_key}.pkl")
+        """Retourne le chemin complet du fichier cache (format NumPy sécurisé)"""
+        return os.path.join(self.cache_dir, f"{cache_key}.npz")
 
-    def init_semantic_model(self, model: SentenceTransformer):
+    def init_semantic_model(self, model: Optional[SentenceTransformer] = None):
         """
         Initialise le modèle de similarité sémantique et pré-calcule les embeddings
         Avec système de cache pour reprise après interruption
+
+        Args:
+            model: Modèle optionnel (si None, utilise le singleton partagé)
         """
         logger.info("🧠 Initialisation du modèle sémantique pour la base SCF...")
-        self.model = model
+
+        # Utiliser le singleton si aucun modèle n'est fourni
+        if model is None:
+            logger.info("🔗 Utilisation du modèle ML partagé (singleton)")
+            self.model = get_shared_ml_model()
+            model_name = get_model_name()
+        else:
+            logger.info("⚠️ Utilisation d'un modèle ML custom (non recommandé)")
+            self.model = model
+            model_name = getattr(model, 'model_name', 'unknown_model')
 
         # Générer la clé de cache
-        model_name = getattr(model, 'model_name', 'unknown_model')
         cache_key = self._get_cache_key(model_name)
         cache_path = self._get_cache_path(cache_key)
 
@@ -137,15 +157,33 @@ class SCFKnowledgeBase:
         if os.path.exists(cache_path):
             try:
                 logger.info(f"💾 Cache trouvé: {cache_key}")
-                with open(cache_path, 'rb') as f:
-                    cache_data = pickle.load(f)
+                # Charger depuis NumPy (SÉCURISÉ - pas pickle)
+                cache_data = np.load(cache_path, allow_pickle=False)
 
                 self.control_embeddings = cache_data['embeddings']
+                cached_model = str(cache_data['model_name'][0])
+                created_at = str(cache_data['created_at'][0])
+
                 logger.info(f"✅ Embeddings chargés depuis le cache ({len(self.control_embeddings)} contrôles)")
-                logger.info(f"📊 Date du cache: {cache_data.get('created_at', 'inconnue')}")
+                logger.info(f"📊 Modèle: {cached_model}, Date: {created_at}")
                 return
             except Exception as e:
-                logger.warning(f"⚠️ Erreur lecture cache, recalcul nécessaire: {e}")
+                logger.warning(f"⚠️ Erreur lecture cache NumPy: {e}")
+                # Tentative de migration depuis ancien format pickle
+                old_cache_path = cache_path.replace('.npz', '.pkl')
+                if os.path.exists(old_cache_path):
+                    logger.warning("💡 Tentative migration depuis ancien format pickle...")
+                    try:
+                        import pickle
+                        with open(old_cache_path, 'rb') as f:
+                            old_cache = pickle.load(f)
+                        self.control_embeddings = old_cache['embeddings']
+                        logger.info(f"✅ Migration réussie, {len(self.control_embeddings)} embeddings récupérés")
+                        # Le nouveau cache sera créé automatiquement ci-dessous
+                    except Exception as migration_error:
+                        logger.error(f"❌ Migration impossible: {migration_error}")
+                else:
+                    logger.warning("⚠️ Recalcul nécessaire")
 
         # Pas de cache ou cache invalide -> calculer les embeddings
         logger.info("🔄 Aucun cache valide, calcul des embeddings...")
@@ -167,19 +205,28 @@ class SCFKnowledgeBase:
                 batch_size=32  # Traiter par batch de 32
             )
 
-            # Sauvegarder dans le cache
-            logger.info("💾 Sauvegarde des embeddings dans le cache...")
-            cache_data = {
-                'embeddings': self.control_embeddings,
-                'model_name': model_name,
-                'num_controls': len(self.controls),
-                'created_at': str(np.datetime64('now'))
-            }
+            # Sauvegarder dans le cache au format NumPy (SÉCURISÉ)
+            logger.info("💾 Sauvegarde des embeddings dans le cache (NumPy)...")
+            from datetime import datetime
 
-            with open(cache_path, 'wb') as f:
-                pickle.dump(cache_data, f)
+            np.savez_compressed(
+                cache_path,
+                embeddings=self.control_embeddings,
+                model_name=np.array([model_name], dtype=object),
+                num_controls=np.array([len(self.controls)], dtype=np.int32),
+                created_at=np.array([datetime.now().isoformat()], dtype=object)
+            )
 
-            logger.info(f"✅ Embeddings calculés et sauvegardés: {cache_path}")
+            logger.info(f"✅ Embeddings calculés et sauvegardés (NumPy): {cache_path}")
+
+            # Supprimer l'ancien cache pickle si présent
+            old_cache_path = cache_path.replace('.npz', '.pkl')
+            if os.path.exists(old_cache_path):
+                try:
+                    os.remove(old_cache_path)
+                    logger.info("🗑️ Ancien cache pickle supprimé")
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.error(f"❌ Erreur lors du calcul des embeddings: {e}")

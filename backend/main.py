@@ -11,6 +11,8 @@ from typing import List, Optional
 import pandas as pd
 from loguru import logger
 import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from database import get_db, engine, Base
 from models import Requirement, SCFControl, ComplianceMapping, ImportSession
@@ -36,15 +38,35 @@ app = FastAPI(
 )
 
 # Configuration CORS
+# Origines autorisées (développement + production)
+allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",  # Frontend Docker
+    "http://localhost:3002",
+    "http://localhost:3003",  # Frontend Dev (alternate port)
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",  # Frontend Docker (IP)
+    "http://127.0.0.1:3002",
+    "http://127.0.0.1:3003",  # Frontend Dev (IP)
+    "http://127.0.0.1:5173"
+]
+
+# Ajouter l'URL de production depuis variable d'environnement
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url:
+    allowed_origins.append(frontend_url)
+    logger.info(f"✅ CORS: Production URL ajoutée: {frontend_url}")
+
+# Ajouter l'URL Vercel connue
+vercel_url = "https://policont-4my0v3d8d-globacom3000s-projects.vercel.app"
+if vercel_url not in allowed_origins:
+    allowed_origins.append(vercel_url)
+    logger.info(f"✅ CORS: Vercel URL ajoutée: {vercel_url}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",  # Frontend Docker
-        "http://localhost:3002",
-        "http://localhost:3003",  # Frontend Dev (alternate port)
-        "http://localhost:5173"
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -53,36 +75,70 @@ app.add_middleware(
 # Initialiser le service ML
 ml_service = MLMappingService()
 
+# Thread pool pour opérations bloquantes (parsing Excel, etc.)
+executor = ThreadPoolExecutor(max_workers=4)
+
 # Imports pour SCF (ne pas charger tout de suite)
 from scf_knowledge_service import get_scf_knowledge_base
 from scf_api_routes import router as scf_router
+import threading
 
-# Variable globale pour la base SCF (chargement lazy)
-scf_kb = None
-scf_kb_initialized = False
+# Import du router AI proxy
+from ai_proxy import router as ai_router
+
+# Variable globale pour la base SCF (chargement lazy thread-safe)
+_scf_kb = None
+_scf_kb_lock = threading.Lock()
+_scf_kb_error = None
 
 def get_or_init_scf_kb():
-    """Récupère la base SCF en la chargeant si nécessaire (lazy loading)"""
-    global scf_kb, scf_kb_initialized
+    """
+    Récupère la base SCF en la chargeant si nécessaire (lazy loading thread-safe)
+    Permet les retry en cas d'échec
+    """
+    global _scf_kb, _scf_kb_error
 
-    if scf_kb_initialized:
-        return scf_kb
+    # Fast path: si déjà initialisé, retourner directement
+    if _scf_kb is not None:
+        return _scf_kb
 
-    try:
-        logger.info("📚 Initialisation de la base de connaissances SCF (lazy loading)...")
-        scf_kb = get_scf_knowledge_base()
-        # Initialiser les embeddings avec le modèle ML
-        scf_kb.init_semantic_model(ml_service.model)
-        scf_kb_initialized = True
-        logger.info("✅ Base SCF prête et indexée")
-        return scf_kb
-    except Exception as e:
-        logger.error(f"❌ Erreur initialisation SCF: {e}")
-        scf_kb_initialized = True  # Marquer comme tenté pour éviter les retry
+    # Si une erreur précédente, la retourner
+    if _scf_kb_error is not None:
+        logger.warning(f"⚠️ Base SCF non disponible (erreur précédente: {_scf_kb_error})")
         return None
+
+    # Slow path: initialiser avec lock
+    with _scf_kb_lock:
+        # Double-check locking
+        if _scf_kb is not None:
+            return _scf_kb
+
+        if _scf_kb_error is not None:
+            return None
+
+        try:
+            logger.info("📚 Initialisation de la base de connaissances SCF (lazy loading thread-safe)...")
+            kb_instance = get_scf_knowledge_base()
+
+            # Initialiser les embeddings avec le modèle ML partagé (singleton)
+            kb_instance.init_semantic_model()
+
+            # Succès : assigner à la variable globale
+            _scf_kb = kb_instance
+            logger.info("✅ Base SCF prête et indexée")
+            return _scf_kb
+
+        except Exception as e:
+            logger.error(f"❌ Erreur initialisation SCF: {e}")
+            # Stocker l'erreur pour éviter les retry immédiats
+            _scf_kb_error = str(e)
+            return None
 
 # Inclure les routes SCF
 app.include_router(scf_router)
+
+# Inclure les routes AI proxy (SÉCURISÉ - clés API côté serveur)
+app.include_router(ai_router)
 
 # ============================================
 # Health Check
@@ -120,12 +176,18 @@ async def import_excel(
     Importer un fichier Excel (sans analyse IA)
     Les données sont directement insérées dans PostgreSQL
     Crée automatiquement une ImportSession pour tracer l'import
+
+    SÉCURITÉ:
+    - Validation de la taille du fichier (max 10MB)
+    - Validation du type MIME réel
+    - Validation de l'intégrité Excel
     """
     try:
         logger.info(f"Début de l'import du fichier: {file.filename}")
 
-        # Lire le fichier Excel
-        contents = await file.read()
+        # SÉCURITÉ: Valider le fichier uploadé
+        from file_validation import validate_excel_file
+        contents, validated_filename = await validate_excel_file(file)
 
         # Détecter toutes les feuilles
         excel_file = pd.ExcelFile(contents)
@@ -133,7 +195,7 @@ async def import_excel(
 
         # Créer une session d'import
         import_session = ImportSession(
-            filename=file.filename,
+            filename=validated_filename,  # Utiliser le nom validé
             source_sheet=", ".join(excel_file.sheet_names),
             status='processing',
             analysis_source='pending',
@@ -146,11 +208,19 @@ async def import_excel(
 
         total_imported = 0
         imported_sheets = []
-        
+
         # Importer chaque feuille
+        loop = asyncio.get_event_loop()
+
         for sheet_name in excel_file.sheet_names:
-            df = pd.read_excel(contents, sheet_name=sheet_name)
-            
+            # Parsing Excel dans thread pool (évite blocage event loop)
+            df = await loop.run_in_executor(
+                executor,
+                pd.read_excel,
+                contents,
+                sheet_name
+            )
+
             logger.info(f"Traitement de la feuille '{sheet_name}': {len(df)} lignes")
             
             # Détecter les colonnes importantes
@@ -337,41 +407,52 @@ async def analyze_batch(
     """
     Analyser un lot d'exigences avec ML
     Génère automatiquement les mappings suggérés
+
+    OPTIMISATION: Résout le problème N+1 en chargeant toutes les données en une seule requête
     """
     try:
         results = []
-        
-        for req_id in requirement_ids:
-            requirement = db.query(Requirement).filter(Requirement.id == req_id).first()
-            
-            if not requirement:
-                continue
-            
+
+        # OPTIMISATION: Charger TOUS les requirements en une seule requête (évite N+1)
+        requirements = db.query(Requirement).filter(
+            Requirement.id.in_(requirement_ids)
+        ).all()
+
+        if not requirements:
+            return {"analyzed": 0, "results": []}
+
+        # OPTIMISATION: Charger tous les contrôles SCF une seule fois
+        scf_controls = db.query(SCFControl).all()
+
+        if not scf_controls:
+            raise HTTPException(status_code=404, detail="Aucun contrôle SCF trouvé")
+
+        # Traiter chaque requirement avec les données déjà chargées
+        for requirement in requirements:
             # Trouver les contrôles similaires
-            scf_controls = db.query(SCFControl).all()
             similar = ml_service.find_similar_controls(
                 requirement_text=requirement.requirement,
-                controls=scf_controls,
+                controls=scf_controls,  # Utiliser les contrôles déjà chargés
                 top_k=3
             )
-            
+
             if similar:
                 # Créer un mapping avec le meilleur match
                 best_match = similar[0]
                 
                 mapping = ComplianceMapping(
-                    requirement_id=req_id,
+                    requirement_id=requirement.id,
                     scf_mapping=f"{best_match.control_id} - {best_match.control_title}",
                     confidence_score=best_match.similarity_score,
                     mapping_source='ml',
                     analysis=f"Mapping automatique ML (similarité: {best_match.similarity_score:.2%})"
                 )
-                
+
                 db.add(mapping)
                 requirement.analysis_status = 'analyzed'
-                
+
                 results.append({
-                    "requirement_id": req_id,
+                    "requirement_id": requirement.id,
                     "best_match": best_match.dict(),
                     "status": "success"
                 })
@@ -466,6 +547,10 @@ async def save_claude_results(
                     confidence_score=0.95,  # Claude = haute confiance
                     mapping_source='claude',
                     analysis=result.get('analysis', ''),
+                    # Champs enrichis (agentive analysis)
+                    threat=result.get('threat'),
+                    risk=result.get('risk'),
+                    control_implementation=result.get('controlImplementation'),
                     import_session_id=import_session.id
                 )
 
@@ -594,7 +679,11 @@ async def get_import_session_results(
                 "cobit5Mapping": mapping.cobit5_mapping if mapping else None,
                 "analysis": mapping.analysis if mapping else None,
                 "confidenceScore": float(mapping.confidence_score) if mapping and mapping.confidence_score else None,
-                "mappingSource": mapping.mapping_source if mapping else None
+                "mappingSource": mapping.mapping_source if mapping else None,
+                # Champs enrichis (agentive analysis)
+                "threat": mapping.threat if mapping else None,
+                "risk": mapping.risk if mapping else None,
+                "controlImplementation": mapping.control_implementation if mapping else None
             }
             results.append(result)
 

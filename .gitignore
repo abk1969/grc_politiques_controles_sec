@@ -109,3 +109,5 @@ temp/
 # Script PID files
 .frontend.pid
 *.pid
+
+.vercel

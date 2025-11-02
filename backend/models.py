@@ -102,6 +102,11 @@ class ComplianceMapping(Base):
     analysis = Column(Text)
     confidence_score = Column(Numeric(3, 2))  # 0.00 à 1.00
 
+    # Champs enrichis (agentive analysis)
+    threat = Column(Text)  # Menace associée
+    risk = Column(Text)  # Risque associé
+    control_implementation = Column(Text)  # Guide d'implémentation
+
     # Source du mapping
     mapping_source = Column(String(50), default='manual', index=True)  # manual, ml, ai, imported
 
